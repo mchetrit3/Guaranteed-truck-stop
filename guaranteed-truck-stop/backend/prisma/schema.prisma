@@ -1,0 +1,214 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  DRIVER
+  OPS
+  LOCATION_ADMIN
+  FLEET_ADMIN
+}
+
+enum ReservationStatus {
+  HELD
+  CONFIRMED
+  CHECKED_IN
+  COMPLETED
+  CANCELED
+  REASSIGNED
+  FAILED
+}
+
+enum CheckInType {
+  ARRIVE
+  DEPART
+}
+
+enum IncidentType {
+  ETA_DRIFT
+  CAPACITY_OVERFLOW
+  LOCATION_ISSUE
+  MANUAL_OVERRIDE
+  RESCUE_PROTOCOL
+}
+
+model User {
+  id            String    @id @default(uuid())
+  email         String    @unique
+  passwordHash  String    @map("password_hash")
+  name          String
+  phone         String?
+  role          UserRole
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  driverProfile   DriverProfile?
+  reservations    Reservation[]
+  incidents       Incident[]
+  fleetMemberships FleetMembership[]
+  managedLocations Location[]
+
+  @@map("users")
+}
+
+model DriverProfile {
+  id              String  @id @default(uuid())
+  userId          String  @unique @map("user_id")
+  homeBase        String? @map("home_base")
+  carrierName     String? @map("carrier_name")
+  eldProvider     String? @map("eld_provider")
+  hoursRemaining  Float   @default(3.5) @map("hours_remaining")
+  dutyStartedAt   DateTime? @map("duty_started_at")
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@map("driver_profiles")
+}
+
+model Fleet {
+  id        String   @id @default(uuid())
+  name      String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  members FleetMembership[]
+
+  @@map("fleets")
+}
+
+model FleetMembership {
+  id      String @id @default(uuid())
+  userId  String @map("user_id")
+  fleetId String @map("fleet_id")
+  role    String @default("MEMBER")
+
+  user  User  @relation(fields: [userId], references: [id])
+  fleet Fleet @relation(fields: [fleetId], references: [id])
+
+  @@unique([userId, fleetId])
+  @@map("fleet_memberships")
+}
+
+model Corridor {
+  id          String  @id @default(uuid())
+  name        String
+  description String?
+  geojson     Json?
+
+  locations    Location[]
+  reservations Reservation[]
+
+  @@map("corridors")
+}
+
+model Location {
+  id              String  @id @default(uuid())
+  name            String
+  address         String
+  lat             Float
+  lng             Float
+  corridorId      String  @map("corridor_id")
+  rulesJson       Json?   @map("rules_json")
+  timezone        String  @default("America/New_York")
+  reliabilityScore Float  @default(0.95) @map("reliability_score")
+  adminId         String? @map("admin_id")
+  orderInCorridor Int     @default(0) @map("order_in_corridor")
+
+  corridor  Corridor @relation(fields: [corridorId], references: [id])
+  admin     User?    @relation(fields: [adminId], references: [id])
+
+  capacities          LocationCapacity[]
+  primaryReservations  Reservation[]   @relation("PrimaryLocation")
+  backupReservations   Reservation[]   @relation("BackupLocation")
+  emergencyReservations Reservation[]  @relation("EmergencyLocation")
+  checkInEvents        CheckInEvent[]
+
+  @@map("locations")
+}
+
+model LocationCapacity {
+  id            String   @id @default(uuid())
+  locationId    String   @map("location_id")
+  date          DateTime @db.Date
+  totalSpots    Int      @map("total_spots")
+  holdbackSpots Int      @default(2) @map("holdback_spots")
+  soldSpots     Int      @default(0) @map("sold_spots")
+
+  location Location @relation(fields: [locationId], references: [id])
+
+  @@unique([locationId, date])
+  @@map("location_capacities")
+}
+
+model Reservation {
+  id                  String            @id @default(uuid())
+  driverId            String            @map("driver_id")
+  corridorId          String            @map("corridor_id")
+  startEta            DateTime          @map("start_eta")
+  arrivalWindowStart  DateTime          @map("arrival_window_start")
+  arrivalWindowEnd    DateTime          @map("arrival_window_end")
+  primaryLocationId   String            @map("primary_location_id")
+  backupLocationId    String            @map("backup_location_id")
+  emergencyLocationId String            @map("emergency_location_id")
+  status              ReservationStatus @default(HELD)
+  confirmationCode    String            @unique @map("confirmation_code")
+  createdAt           DateTime          @default(now()) @map("created_at")
+  updatedAt           DateTime          @updatedAt @map("updated_at")
+
+  driver            User     @relation(fields: [driverId], references: [id])
+  corridor          Corridor @relation(fields: [corridorId], references: [id])
+  primaryLocation   Location @relation("PrimaryLocation", fields: [primaryLocationId], references: [id])
+  backupLocation    Location @relation("BackupLocation", fields: [backupLocationId], references: [id])
+  emergencyLocation Location @relation("EmergencyLocation", fields: [emergencyLocationId], references: [id])
+
+  checkInEvents     CheckInEvent[]
+  incidents         Incident[]
+  restCertificates  RestCertificate[]
+
+  @@map("reservations")
+}
+
+model CheckInEvent {
+  id            String      @id @default(uuid())
+  reservationId String      @map("reservation_id")
+  locationId    String      @map("location_id")
+  ts            DateTime    @default(now())
+  type          CheckInType
+  lat           Float
+  lng           Float
+  confidence    Float       @default(1.0)
+
+  reservation Reservation @relation(fields: [reservationId], references: [id])
+  location    Location    @relation(fields: [locationId], references: [id])
+
+  @@map("check_in_events")
+}
+
+model Incident {
+  id            String       @id @default(uuid())
+  reservationId String       @map("reservation_id")
+  type          IncidentType
+  notes         String
+  createdById   String       @map("created_by_id")
+  createdAt     DateTime     @default(now()) @map("created_at")
+
+  reservation Reservation @relation(fields: [reservationId], references: [id])
+  createdBy   User        @relation(fields: [createdById], references: [id])
+
+  @@map("incidents")
+}
+
+model RestCertificate {
+  id            String   @id @default(uuid())
+  reservationId String   @map("reservation_id")
+  generatedAt   DateTime @default(now()) @map("generated_at")
+  payloadJson   Json     @map("payload_json")
+
+  reservation Reservation @relation(fields: [reservationId], references: [id])
+
+  @@map("rest_certificates")
+}
